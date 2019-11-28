@@ -134,11 +134,18 @@ ggplot(df_sp, aes(x=cdd_0, y=hvac_kWh)) +
 
 ```
 
-
-
-
-Fit Data 
+FIt Community Multivarite Model 
 ```{r} 
+community_model <- lm(hvac_kWh ~ cdd_0 + hdd_0, data=df_sp) 
+summary(community_model)
+lm_diagnose(community_model, "All Homes") 
+```
+
+Residuals are normally distributed based on the linearity of the normal qq-plot, so linear model is valid. 
+
+
+Fit Data for individual homes 
+```
 m_summary <- data.frame(hdd_coef = double(), 
                         cdd_coef = double(), 
                         hdd_p = double(), 
@@ -166,8 +173,10 @@ for (rlid in unique(df$RLID)){
 ```
 
 
+
+
 Plot Diagnostics for top R^2 models 
-```{r} 
+``` 
 top_summary <- m_summary[order(-m_summary$r_square),] %>%
   head() 
 
