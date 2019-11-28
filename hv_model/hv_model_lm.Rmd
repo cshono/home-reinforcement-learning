@@ -1,0 +1,191 @@
+---
+title: "hv_model"
+author: "Corey Shono"
+date: "November 19, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+```
+
+
+Import Libraries 
+```{r message=FALSE}  
+#rm(list=ls())
+library(ggplot2) 
+library(dplyr)
+library(tidyverse) 
+library(plotly) 
+library(AppliedPredictiveModeling)
+library(caret)
+#library(e1071)
+library(earth)
+#library(leaps)
+#library(boot)
+#library(kernlab)
+#library(randomForest) 
+library(hash) 
+```
+
+
+Define Functions 
+```{r} 
+get_m_params <- function(m){
+  if ("hdd_0" %in% rownames(summary(m)$coefficients)){
+    h_coef <- summary(m)$coefficients["hdd_0",1] 
+    h_p <- summary(m)$coefficients["hdd_0",4] 
+  }
+  else {
+    h_coef <- NA
+    h_p <- NA 
+  }
+  
+  if ("cdd_0" %in% rownames(summary(m)$coefficients)){
+    c_coef <- summary(m)$coefficients["cdd_0",1]
+    c_p <- summary(m)$coefficients["cdd_0",4]
+  }
+  else {
+    c_coef <- NA
+    c_p <- NA 
+  }
+  
+  intercept <- summary(m)$coefficients["(Intercept)",1] 
+  
+  r2 <- summary(m)$r.squared 
+  rse <- summary(m)$sigma
+  
+  m_values <- c(h_coef, c_coef, h_p, c_p, r2, rse, intercept) 
+  return(m_values) 
+}
+
+lm_diagnose <- function(lm_model, name=""){
+  # Model Summary 
+  #print(paste("Model:", name))
+  #print(paste("Resid Standard Error:", summary(lm_model)$sigma))
+  #print(paste("R-Squared:", summary(lm_model)$r.squared))
+  
+  # Histogram Standardized Residual 
+  #hist(resid(lm_model)/sd(resid(lm_model)), main=paste(name, "Normalized Residual Histogram"), xlab="Standardized Residual", panel.first=grid(), breaks=23) 
+  
+  # QQ Plot Standardized Residual 
+  qqnorm(resid(lm_model)/sd(resid(lm_model)), cex=0.5, main=paste(name, "Normalized QQ Plot"), ylab="Standardized Residual", panel.first=grid()) 
+  qqline(resid(lm_model)/sd(resid(lm_model)), col="red") 
+  
+  #plot(lm_model, panel.first=grid())
+}
+
+
+```
+
+
+Import Data 
+```{r} 
+#file_in <- "../data/hv_model_2019-09.csv" 
+file_rmt <- "../data/hv_model_2019-09_rmt.csv" 
+file_sp <- "../data/hv_model_2019-09_sp.csv" 
+
+df_rmt <- read.csv(file_rmt) 
+df_sp <- read.csv(file_sp) 
+```
+
+Scatter Plot of data 
+```{r} 
+ggplot(df_rmt, aes(x=cdd_0, y=hvac_kWh, color=Timestamp)) + geom_point()
+ggplot(df_sp, aes(x=cdd_0, y=hvac_kWh, color=Timestamp)) + geom_point() 
+```
+
+It is clear from this that the first and last days of the dataset are skewed from incompleteness of data leading to a lower amount of energy measured for these days in the dataset. Therefore, we will omit the first and last day in the dataset from this model fitting. 
+
+Remove 2019-09-04 and 2019-09-30 
+```{r} 
+# Convert Timestamp columns to date types 
+df_rmt$Timestamp <- as.Date(df_rmt$Timestamp, "%Y-%m-%d") 
+df_sp$Timestamp <- as.Date(df_sp$Timestamp, "%Y-%m-%d") 
+
+df_sp <- df_sp %>% 
+  filter(Timestamp > as.Date("2019-09-05")) %>% 
+  filter(Timestamp < as.Date("2019-09-29"))
+
+df_rmt <- df_rmt %>%
+  filter(Timestamp > as.Date("2019-09-05")) %>%
+  filter(Timestamp < as.Date("2019-09-29")) 
+
+ggplot(df_rmt, aes(x=cdd_0, y=hvac_kWh, color=RLID)) + geom_point()
+ggplot(df_sp, aes(x=cdd_0, y=hvac_kWh, color=RLID)) + geom_point() 
+```
+
+Based on the lack of thermostat data, and the appearance that the thermal envelope of the entire community appears to have a similar U-value, we can probably apply the same thermal model to every house in the community. 
+
+Fit Thermal Model to Entire Community 
+```{r} 
+lm_eqn <- function(df){
+    m <- lm(hvac_kWh ~ cdd_0, df);
+    eq <- substitute(italic(y) == a + b %.% italic(x)*","~~italic(r)^2~"="~r2, 
+         list(a = format(unname(coef(m)[1]), digits = 2),
+              b = format(unname(coef(m)[2]), digits = 2),
+             r2 = format(summary(m)$r.squared, digits = 3)))
+    as.character(as.expression(eq));
+}
+ggplot(df_sp, aes(x=cdd_0, y=hvac_kWh)) + 
+  geom_point() + 
+  geom_smooth(method=lm) + 
+  geom_text(x=5, y=40, label = lm_eqn(df_sp), parse=TRUE) 
+
+```
+
+
+
+
+Fit Data 
+```{r} 
+m_summary <- data.frame(hdd_coef = double(), 
+                        cdd_coef = double(), 
+                        hdd_p = double(), 
+                        cdd_p = double(), 
+                        r_square = double(), 
+                        RSE = double(), 
+                        intercept = double() 
+) 
+models <- hash() # hash object containing all model objects 
+
+for (rlid in unique(df$RLID)){
+  # Filter dataset for current RLID 
+  tmp <- df[df$RLID == rlid, ]
+  
+  # Fit linear model 
+  m <- lm(hvac_kWh ~ cdd_0 + hdd_0, data=tmp)
+  
+  # Save Model Results 
+  models[[rlid]] <- m 
+  m_summary[rlid,] <- get_m_params(m) 
+  
+  # Plot QQ Plot 
+  #lm_diagnose(m, rlid)
+}
+```
+
+
+Plot Diagnostics for top R^2 models 
+```{r} 
+top_summary <- m_summary[order(-m_summary$r_square),] %>%
+  head() 
+
+# Plot Normal QQ-Plot for each model 
+for (rlid in rownames(top_summary)){
+  lm_diagnose(models[[rlid]], rlid) 
+  plot_data <- data.frame(
+    fitted_values = models[[rlid]]$fitted.values, 
+    residuals = models[[rlid]]$residuals
+  )
+  p <- ggplot(plot_data, aes(x=fitted_values, y=residuals)) + 
+    geom_point() + 
+    geom_smooth(method=lm)
+  print(p) 
+}
+```
+
+This may not be the most reliable model for individual homes. 
+
+
+
